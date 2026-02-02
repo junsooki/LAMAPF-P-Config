@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -45,8 +46,9 @@ def ensure_tasks(
         for t in tasks
         if t["spawn_time"] <= current_timestep and t["picked_time"] is None
     }
-    if len(available_positions) < agent_count:
-        need = agent_count + 1 - len(available_positions)
+    min_required = max(agent_count, math.ceil(len(shelf_cells) * 0.2))
+    if len(available_positions) < min_required:
+        need = min_required - len(available_positions)
         candidates = [p for p in shelf_cells if p not in available_positions]
         if need > len(candidates):
             raise RuntimeError("Not enough unique shelf cells to allocate tasks")
@@ -69,7 +71,15 @@ def ensure_tasks(
     return next_task_id
 
 
-def run_simulation(map_path: str, agent_count: int, max_timestep: int, output_path: str, seed: int) -> None:
+def run_simulation(
+    map_path: str,
+    agent_count: int,
+    max_timestep: int,
+    output_path: str,
+    seed: int,
+    solver: str = "dinic",
+    debug: bool = False,
+) -> None:
     random.seed(seed)
     data = load_map(map_path)
     cells = data.get("cells")
@@ -122,18 +132,25 @@ def run_simulation(map_path: str, agent_count: int, max_timestep: int, output_pa
                 unique_tasks[pos] = t
         pickup_points = [t["pos"] for t in unique_tasks.values()]
 
+        if debug:
+            print(
+                f"[sim] timestep={current_timestep} empty={sum(1 for a in agents.values() if a['state']=='Empty')} "
+                f"loaded={sum(1 for a in agents.values() if a['state']=='Loaded')} "
+                f"pickups={len(pickup_points)} goals={len(goals)}"
+            )
+
         robots: List[RobotState] = []
         for rid in sorted(agents.keys()):
             agent = agents[rid]
             robots.append(RobotState(id=rid, pos=agent["pos"], state=agent["state"]))
 
-        T, paths = plan_round(grid, robots, pickup_points, goals, drop_caps, T_max=max_timestep)
+        T, paths = plan_round(grid, robots, pickup_points, goals, drop_caps, T_max=max_timestep, method=solver)
         if T is None:
             empty_count = sum(1 for r in robots if r.state == "Empty")
             loaded_count = sum(1 for r in robots if r.state == "Loaded")
             unique_pickups = len({tuple(p) for p in pickup_points})
             from planner import explain_infeasible
-            reasons = explain_infeasible(grid, robots, pickup_points, goals, drop_caps, max_timestep)
+            reasons = explain_infeasible(grid, robots, pickup_points, goals, drop_caps, max_timestep, method=solver)
             diagnostics = (
                 f"Planning failed at timestep {current_timestep}. "
                 f"empty={empty_count}, loaded={loaded_count}, "
@@ -164,6 +181,9 @@ def run_simulation(map_path: str, agent_count: int, max_timestep: int, output_pa
         if delta <= 0:
             delta = 1
         exceeds = current_timestep + delta > max_timestep
+
+        if debug:
+            print(f"[sim] plan window T={T}, delta={delta}")
 
         for rid in sorted(agents.keys()):
             path = paths.get(rid, [])
@@ -215,6 +235,7 @@ def run_simulation(map_path: str, agent_count: int, max_timestep: int, output_pa
         "map": map_path,
         "max_timestep": max_timestep,
         "seed": seed,
+        "solver": solver,
         "agents": {
             str(rid): {
                 "trajectory": trajectories[rid],
@@ -270,9 +291,19 @@ def main() -> None:
     parser.add_argument("--max_timestep", type=int, required=True, help="Max timestep")
     parser.add_argument("--output", default="simulation_output.json", help="Output JSON path")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--solver", default="dinic", help="Max-flow solver: dinic or hlpp")
+    parser.add_argument("--debug", action="store_true", help="Print debug info per planning round")
     args = parser.parse_args()
 
-    run_simulation(args.map, args.agents, args.max_timestep, args.output, args.seed)
+    run_simulation(
+        args.map,
+        args.agents,
+        args.max_timestep,
+        args.output,
+        args.seed,
+        solver=args.solver,
+        debug=args.debug,
+    )
 
 
 if __name__ == "__main__":

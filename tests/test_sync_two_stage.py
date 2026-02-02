@@ -66,3 +66,27 @@ def test_sync_two_stage_infeasible_when_pickups_too_few():
     drops = [(0, 0), (1, 0)]
     result = flow_planner_cpp.plan_flow_sync(grid, starts, pickups, drops, [1, 1], 2, 1)
     assert result["feasible"] is False
+
+
+def test_sync_tau_too_small_infeasible():
+    grid = [
+        [0, 0],
+        [0, 0],
+    ]
+    starts = [(0, 0)]
+    pickups = [(1, 1)]
+    drops = [(0, 1)]
+    result = flow_planner_cpp.plan_flow_sync(grid, starts, pickups, drops, [1], 2, 0)
+    assert result["feasible"] is False
+
+
+def test_sync_hlpp_solver_feasible():
+    grid = [
+        [0, 0],
+        [0, 0],
+    ]
+    starts = [(0, 0), (1, 0)]
+    pickups = [(0, 1), (1, 1)]
+    drops = [(0, 0), (1, 0)]
+    result = flow_planner_cpp.plan_flow_sync(grid, starts, pickups, drops, [1, 1], 2, 1, "hlpp")
+    assert result["feasible"] is True

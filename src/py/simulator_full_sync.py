@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -45,8 +46,9 @@ def ensure_tasks(
         for t in tasks
         if t["spawn_time"] <= current_timestep and t["picked_time"] is None
     }
-    if len(available_positions) < agent_count:
-        need = agent_count + 1 - len(available_positions)
+    min_required = max(agent_count, math.ceil(len(shelf_cells) * 0.2))
+    if len(available_positions) < min_required:
+        need = min_required - len(available_positions)
         candidates = [p for p in shelf_cells if p not in available_positions]
         if need > len(candidates):
             raise RuntimeError("Not enough unique shelf cells to allocate tasks")
@@ -75,6 +77,8 @@ def run_simulation(
     max_timestep: int,
     output_path: str,
     seed: int,
+    solver: str = "dinic",
+    workers: int = 1,
     debug: bool = False,
     debug_every: int = 25,
 ) -> None:
@@ -146,6 +150,8 @@ def run_simulation(
             goals,
             drop_caps,
             T_max=max_timestep,
+            method=solver,
+            parallel_workers=workers,
             verbose=debug,
             progress_every=debug_every,
         )
@@ -216,6 +222,8 @@ def run_simulation(
         "map": map_path,
         "max_timestep": max_timestep,
         "seed": seed,
+        "solver": solver,
+        "solver_workers": workers,
         "stats": stats,
         "agents": {
             str(rid): {
@@ -365,6 +373,8 @@ def main() -> None:
     parser.add_argument("--max_timestep", type=int, required=True, help="Max timestep")
     parser.add_argument("--output", default="simulation_output.json", help="Output JSON path")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--solver", default="dinic", help="Max-flow solver: dinic or hlpp")
+    parser.add_argument("--workers", type=int, default=1, help="Parallel tau workers (threaded)")
     parser.add_argument("--debug", action="store_true", help="Print sync search progress")
     parser.add_argument("--debug_every", type=int, default=25, help="Tau progress print interval")
     args = parser.parse_args()
@@ -375,6 +385,8 @@ def main() -> None:
         args.max_timestep,
         args.output,
         args.seed,
+        solver=args.solver,
+        workers=args.workers,
         debug=args.debug,
         debug_every=args.debug_every,
     )

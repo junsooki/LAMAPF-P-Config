@@ -91,6 +91,17 @@ class MapEditor:
         )
         self.sim_scale.pack(fill=tk.X, pady=(4, 0))
 
+        tk.Label(left, text="Zoom").pack(anchor=tk.W, pady=(8, 0))
+        self.zoom_scale = tk.Scale(
+            left,
+            from_=self.min_cell_size,
+            to=self.max_cell_size,
+            orient=tk.HORIZONTAL,
+            command=self._on_zoom_scale,
+        )
+        self.zoom_scale.set(self.cell_size)
+        self.zoom_scale.pack(fill=tk.X, pady=(4, 0))
+
         self.status_label = tk.Label(left, text="Hover agent to see state", width=24, anchor="w")
         self.status_label.pack(fill=tk.X, pady=(8, 0))
 
@@ -186,6 +197,26 @@ class MapEditor:
         self.cell_size = new_size
         self.view_offset_x = event.x - grid_x * new_size
         self.view_offset_y = event.y - grid_y * new_size
+        if hasattr(self, "zoom_scale"):
+            self.zoom_scale.set(new_size)
+        self._draw_all()
+
+    def _on_zoom_scale(self, value):
+        try:
+            new_size = int(float(value))
+        except ValueError:
+            return
+        new_size = max(self.min_cell_size, min(self.max_cell_size, new_size))
+        if new_size == self.cell_size:
+            return
+        cx = self.canvas.winfo_width() / 2
+        cy = self.canvas.winfo_height() / 2
+        old_size = self.cell_size
+        grid_x = (cx - self.view_offset_x) / old_size if old_size > 0 else 0.0
+        grid_y = (cy - self.view_offset_y) / old_size if old_size > 0 else 0.0
+        self.cell_size = new_size
+        self.view_offset_x = cx - grid_x * new_size
+        self.view_offset_y = cy - grid_y * new_size
         self._draw_all()
 
     def _on_click(self, event):

@@ -5,19 +5,20 @@
 
 ## 主要函数
 
-### run_simulation(map_path, agent_count, max_timestep, output_path, seed)
+### run_simulation(map_path, agent_count, max_timestep, output_path, seed, solver="dinic", debug=False)
 ```python
-def run_simulation(map_path: str, agent_count: int, max_timestep: int, output_path: str, seed: int) -> None:
+def run_simulation(map_path: str, agent_count: int, max_timestep: int, output_path: str, seed: int, solver: str = "dinic", debug: bool = False) -> None:
     """运行仿真并保存结果 JSON。"""
 ```
 - 输入：地图路径、agent 数、最大 timestep、输出路径
 - 输出：保存 JSON（agent 轨迹 + 任务生成/取走/送达时间）
  - `seed` 用于可复现随机生成
+ - `solver` 选择最大流求解器（`dinic`/`hlpp`）
 
 ### ensure_tasks(...)
 ```python
 def ensure_tasks(tasks, shelf_cells, current_timestep, agent_count, next_task_id) -> int:
-    """若可用任务数小于 agent 数，随机补足到 > agent_count。返回更新后的 next_task_id。"""
+    """若可用任务数小于 max(agent_count, 20%货架数)，随机补足到该下限。返回更新后的 next_task_id。"""
 ```
 
 ## 约束/约定
@@ -30,3 +31,5 @@ def ensure_tasks(tasks, shelf_cells, current_timestep, agent_count, next_task_id
 - 任务分配使用唯一货架位置，避免同一位置重复任务导致不可行。
 - 卸货点按时间层吸收（容量为“同一时刻最多 1 人”）；模拟中 `drop_caps` 设为 1。
 - 输出前会校验轨迹无点冲突与边冲突，发现冲突直接报错。
+- 支持 debug 输出：打印每轮的 agent 状态与规划窗口。
+- 输出 JSON 记录 `solver` 字段。

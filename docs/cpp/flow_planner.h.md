@@ -25,6 +25,21 @@ PlanResult plan_flow(
 - 作用：在时间窗口 `T` 内构建时间展开图并求解最大流
 - 目标点采用按时间吸收机制（每个时间层容量限制）；详情见 `flow_planner.cpp.md`
 
+### PlanResult plan_flow_with_method(...)
+```cpp
+PlanResult plan_flow_with_method(
+    const std::vector<std::vector<int>>& grid,
+    const std::vector<std::pair<int,int>>& starts,
+    const std::vector<std::pair<int,int>>& targets,
+    const std::vector<int>& target_caps,
+    int T,
+    const std::vector<std::tuple<int,int,int>>& reserved,
+    const std::vector<std::tuple<int,int,int,int,int>>& reserved_edges,
+    const std::string& method
+);
+```
+- 作用：按 `method` 选择最大流算法（`dinic`/`hlpp`）。
+
 ### PlanResult plan_flow_sync(...)
 ```cpp
 PlanResult plan_flow_sync(
@@ -38,3 +53,18 @@ PlanResult plan_flow_sync(
 );
 ```
 - 作用：同步两段模型的 max-flow，可选 `tau` 作为强制取货时刻
+
+### PlanResult plan_flow_sync_with_method(...)
+```cpp
+PlanResult plan_flow_sync_with_method(
+    const std::vector<std::vector<int>>& grid,
+    const std::vector<std::pair<int,int>>& starts,
+    const std::vector<std::pair<int,int>>& pickups,
+    const std::vector<std::pair<int,int>>& drops,
+    const std::vector<int>& drop_caps,
+    int T,
+    int tau,
+    const std::string& method
+);
+```
+- 作用：同步两段模型的 max-flow，支持 `method` 选择求解器。

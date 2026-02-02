@@ -1,7 +1,7 @@
 # src/cpp/flow_planner.cpp
 
 ## 作用
-构建时间展开网络、运行 Dinic、并从整数流中分解路径。
+构建时间展开网络、运行最大流（Dinic/HLPP）、并从整数流中分解路径。
 
 ## 函数定义与作用
 
@@ -22,10 +22,14 @@
   - `feasible=true` 表示流量达到 `starts.size()`
   - `paths` 只在可行时保证完整，长度为到达目标时间步 + 1
 
+### PlanResult plan_flow_with_method(...)
+- 作用：与 `plan_flow` 相同，但按 `method` 选择最大流算法（`dinic` 或 `hlpp`）。
+
 ## 约束/约定
 - 处理点容量与边冲突（通过边节点拆分，限制同一时刻对向交换）。
 - 移动规则：4 邻接 + 等待。
 - 目标点采用“按时间吸收”机制：每个时间层可被占用一次（总次数不再受 gate 限制）。
+- 使用 BFS 距离剪枝时间层：仅构建满足 `dist(start)<=t` 且 `dist(target)<=T-t` 的节点与边。
 
 ### PlanResult plan_flow_sync(...)
 - 作用：
@@ -39,3 +43,6 @@
 - 输出：
   - `feasible=true` 表示满足同步约束并达到最大流
   - `paths` 只在可行时保证完整，长度为 `T+1`
+
+### PlanResult plan_flow_sync_with_method(...)
+- 作用：同步两段模型，支持 `method` 选择最大流算法（`dinic` 或 `hlpp`）。

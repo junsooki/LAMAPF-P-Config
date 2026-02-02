@@ -11,6 +11,7 @@ pybind11_add_module(flow_planner_cpp
     src/cpp/bindings.cpp
     src/cpp/flow_planner.cpp
     src/cpp/dinic.cpp
+    src/cpp/hlpp.cpp
     src/cpp/grid_graph.cpp
 )
 

@@ -93,3 +93,28 @@ def test_same_target_different_times():
     paths = result["paths"]
     assert len(paths) == 2
     assert all(path[-1] == (1, 0) for path in paths)
+
+
+def test_unreachable_target_infeasible():
+    grid = [
+        [0, 1, 0],
+        [0, 1, 0],
+        [0, 1, 0],
+    ]
+    starts = [(0, 0)]
+    targets = [(2, 0)]
+    result = flow_planner_cpp.plan_flow(grid, starts, targets, [1], 6, [], [])
+    assert result["feasible"] is False
+
+
+def test_hlpp_solver_feasible():
+    grid = [
+        [0, 0, 0],
+        [0, 0, 0],
+    ]
+    starts = [(0, 0), (2, 0)]
+    targets = [(2, 1), (0, 1)]
+    result = flow_planner_cpp.plan_flow(grid, starts, targets, [1, 1], 3, [], [], "hlpp")
+    assert result["feasible"] is True
+    paths = result["paths"]
+    assert len(paths) == 2

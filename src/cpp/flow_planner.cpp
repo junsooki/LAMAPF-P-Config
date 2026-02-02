@@ -2,8 +2,12 @@
 
 #include "dinic.h"
 #include "grid_graph.h"
+#include "hlpp.h"
 
 #include <algorithm>
+#include <cctype>
+#include <queue>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace {
@@ -43,22 +47,60 @@ int used_flow(const Edge& e) {
     return e.original_cap - e.cap;
 }
 
+std::vector<int> multi_source_dist(const GridGraph& graph, const std::vector<int>& sources) {
+    int n = graph.node_count();
+    std::vector<int> dist(n, -1);
+    std::queue<int> q;
+    for (int s : sources) {
+        if (s < 0 || s >= n) {
+            continue;
+        }
+        if (dist[s] == 0) {
+            continue;
+        }
+        dist[s] = 0;
+        q.push(s);
+    }
+    while (!q.empty()) {
+        int cur = q.front();
+        q.pop();
+        int d = dist[cur];
+        for (int nb : graph.neighbors(cur)) {
+            if (dist[nb] != -1) {
+                continue;
+            }
+            dist[nb] = d + 1;
+            q.push(nb);
+        }
+    }
+    return dist;
+}
+
+std::string normalize_method(const std::string& method) {
+    std::string out;
+    out.reserve(method.size());
+    for (unsigned char c : method) {
+        out.push_back(static_cast<char>(std::tolower(c)));
+    }
+    return out;
+}
+
+template <typename FlowAlgo>
 std::vector<std::vector<std::pair<int, int>>> extract_paths(
-    Dinic& dinic,
+    FlowAlgo& flow,
     const GridGraph& grid,
     const TimeNodeIndex& indexer,
     const std::vector<int>& start_ids,
     int source,
     int sink) {
     std::vector<std::vector<std::pair<int, int>>> paths;
-    auto& g = dinic.graph();
+    auto& g = flow.graph();
     (void)source;
 
     for (int sid : start_ids) {
         int cur = indexer.in_node(sid, 0);
         std::vector<std::pair<int, int>> path;
 
-        // Start from source edge to in-node.
         while (cur != sink) {
             int next_edge_idx = -1;
             for (int i = 0; i < static_cast<int>(g[cur].size()); ++i) {
@@ -91,9 +133,8 @@ std::vector<std::vector<std::pair<int, int>>> extract_paths(
     return paths;
 }
 
-}  // namespace
-
-PlanResult plan_flow(
+template <typename FlowAlgo>
+PlanResult plan_flow_impl(
     const std::vector<std::vector<int>>& grid,
     const std::vector<std::pair<int, int>>& starts,
     const std::vector<std::pair<int, int>>& targets,
@@ -142,6 +183,36 @@ PlanResult plan_flow(
         }
         target_ids.push_back(did);
     }
+    if (target_ids.empty()) {
+        return result;
+    }
+
+    auto dist_start = multi_source_dist(graph, start_ids);
+    auto dist_target = multi_source_dist(graph, target_ids);
+    std::vector<int> earliest(num_cells, -1);
+    std::vector<int> latest(num_cells, -1);
+    for (int cell = 0; cell < num_cells; ++cell) {
+        if (dist_start[cell] < 0 || dist_target[cell] < 0) {
+            continue;
+        }
+        int l = T - dist_target[cell];
+        if (l < 0) {
+            continue;
+        }
+        earliest[cell] = dist_start[cell];
+        latest[cell] = l;
+    }
+    auto active = [&](int cell, int t) {
+        if (earliest[cell] < 0) {
+            return false;
+        }
+        return t >= earliest[cell] && t <= latest[cell];
+    };
+    for (int sid : start_ids) {
+        if (!active(sid, 0)) {
+            return result;
+        }
+    }
 
     TimeNodeIndex indexer{num_cells, T};
     std::vector<std::pair<int, int>> undirected_edges;
@@ -161,7 +232,7 @@ PlanResult plan_flow(
     int sink = edge_offset + edge_nodes;
     int source = sink + 1;
 
-    Dinic dinic(source + 1);
+    FlowAlgo flow(source + 1);
 
     std::vector<char> blocked((T + 1) * num_cells, 0);
     for (const auto& r : reserved) {
@@ -179,16 +250,21 @@ PlanResult plan_flow(
 
     for (int t = 0; t <= T; ++t) {
         for (int cell = 0; cell < num_cells; ++cell) {
+            if (!active(cell, t)) {
+                continue;
+            }
             int cap = blocked[t * num_cells + cell] ? 0 : 1;
             int in = indexer.in_node(cell, t);
             int out = indexer.out_node(cell, t);
             if (cap > 0) {
-                dinic.add_edge(in, out, cap);
+                flow.add_edge(in, out, cap);
             }
             if (t == T) {
                 continue;
             }
-            dinic.add_edge(out, indexer.in_node(cell, t + 1), 1);
+            if (active(cell, t + 1)) {
+                flow.add_edge(out, indexer.in_node(cell, t + 1), 1);
+            }
         }
     }
 
@@ -196,14 +272,26 @@ PlanResult plan_flow(
         for (int eidx = 0; eidx < num_edges; ++eidx) {
             int a = undirected_edges[eidx].first;
             int b = undirected_edges[eidx].second;
+            bool move_ab = active(a, t) && active(b, t + 1);
+            bool move_ba = active(b, t) && active(a, t + 1);
+            if (!move_ab && !move_ba) {
+                continue;
+            }
             int edge_in = edge_offset + (t * num_edges + eidx) * 2;
             int edge_out = edge_in + 1;
-            dinic.add_edge(indexer.out_node(a, t), edge_in, 1);
-            dinic.add_edge(indexer.out_node(b, t), edge_in, 1);
-            int edge_cap = 1;
-            dinic.add_edge(edge_in, edge_out, edge_cap);
-            dinic.add_edge(edge_out, indexer.in_node(a, t + 1), 1);
-            dinic.add_edge(edge_out, indexer.in_node(b, t + 1), 1);
+            if (move_ab) {
+                flow.add_edge(indexer.out_node(a, t), edge_in, 1);
+            }
+            if (move_ba) {
+                flow.add_edge(indexer.out_node(b, t), edge_in, 1);
+            }
+            flow.add_edge(edge_in, edge_out, 1);
+            if (move_ba) {
+                flow.add_edge(edge_out, indexer.in_node(a, t + 1), 1);
+            }
+            if (move_ab) {
+                flow.add_edge(edge_out, indexer.in_node(b, t + 1), 1);
+            }
         }
     }
 
@@ -216,6 +304,7 @@ PlanResult plan_flow(
             long long key = (static_cast<long long>(a) << 32) | static_cast<unsigned int>(b);
             edge_index[key] = i;
         }
+        auto& g = flow.graph();
         for (const auto& e : reserved_edges) {
             int x1, y1, x2, y2, t;
             std::tie(x1, y1, x2, y2, t) = e;
@@ -237,7 +326,7 @@ PlanResult plan_flow(
             int eidx = it->second;
             int edge_in = edge_offset + (t * num_edges + eidx) * 2;
             int edge_out = edge_in + 1;
-            for (auto& edge : dinic.graph()[edge_in]) {
+            for (auto& edge : g[edge_in]) {
                 if (edge.to == edge_out && edge.original_cap > 0) {
                     edge.cap = 0;
                     break;
@@ -247,7 +336,7 @@ PlanResult plan_flow(
     }
 
     for (int sid : start_ids) {
-        dinic.add_edge(source, indexer.in_node(sid, 0), 1);
+        flow.add_edge(source, indexer.in_node(sid, 0), 1);
     }
 
     for (size_t i = 0; i < target_ids.size(); ++i) {
@@ -257,21 +346,22 @@ PlanResult plan_flow(
             continue;
         }
         for (int t = 0; t <= T; ++t) {
-            dinic.add_edge(indexer.out_node(tid, t), sink, cap);
+            flow.add_edge(indexer.out_node(tid, t), sink, cap);
         }
     }
 
-    int flow = dinic.max_flow(source, sink);
-    if (flow != static_cast<int>(starts.size())) {
+    int flow_value = flow.max_flow(source, sink);
+    if (flow_value != static_cast<int>(starts.size())) {
         return result;
     }
 
-    result.paths = extract_paths(dinic, graph, indexer, start_ids, source, sink);
+    result.paths = extract_paths(flow, graph, indexer, start_ids, source, sink);
     result.feasible = true;
     return result;
 }
 
-PlanResult plan_flow_sync(
+template <typename FlowAlgo>
+PlanResult plan_flow_sync_impl(
     const std::vector<std::vector<int>>& grid,
     const std::vector<std::pair<int, int>>& starts,
     const std::vector<std::pair<int, int>>& pickups,
@@ -352,10 +442,62 @@ PlanResult plan_flow_sync(
     int sink = target_offset + static_cast<int>(drops.size());
     int source = sink + 1;
 
-    Dinic dinic(source + 1);
+    FlowAlgo flow(source + 1);
+
+    auto dist_start = multi_source_dist(graph, start_ids);
+    auto dist_drop = multi_source_dist(graph, drop_ids);
+    if (pickups.empty()) {
+        return result;
+    }
+    std::vector<int> pick_ids;
+    pick_ids.reserve(pickups.size());
+    for (const auto& p : pickups) {
+        int pid = graph.id(p.first, p.second);
+        if (pid < 0) {
+            return result;
+        }
+        pick_ids.push_back(pid);
+    }
+    auto dist_pick = multi_source_dist(graph, pick_ids);
+
+    std::vector<int> earliest(num_cells, -1);
+    std::vector<int> latest(num_cells, -1);
+    for (int cell = 0; cell < num_cells; ++cell) {
+        if (dist_start[cell] < 0 || dist_drop[cell] < 0) {
+            continue;
+        }
+        int l = T - dist_drop[cell];
+        if (l < 0) {
+            continue;
+        }
+        earliest[cell] = dist_start[cell];
+        latest[cell] = l;
+    }
+    auto active = [&](int cell, int t) {
+        if (earliest[cell] < 0) {
+            return false;
+        }
+        if (t < earliest[cell] || t > latest[cell]) {
+            return false;
+        }
+        if (t >= tau) {
+            if (dist_pick[cell] < 0 || dist_pick[cell] > t - tau) {
+                return false;
+            }
+        }
+        return true;
+    };
+    for (int sid : start_ids) {
+        if (!active(sid, 0)) {
+            return result;
+        }
+    }
 
     for (int t = 0; t <= T; ++t) {
         for (int cell = 0; cell < num_cells; ++cell) {
+            if (!active(cell, t)) {
+                continue;
+            }
             int cap = 1;
             if (t == tau && !pickup_mask[cell]) {
                 cap = 0;
@@ -363,12 +505,14 @@ PlanResult plan_flow_sync(
             int in = indexer.in_node(cell, t);
             int out = indexer.out_node(cell, t);
             if (cap > 0) {
-                dinic.add_edge(in, out, cap);
+                flow.add_edge(in, out, cap);
             }
             if (t == T) {
                 continue;
             }
-            dinic.add_edge(out, indexer.in_node(cell, t + 1), 1);
+            if (active(cell, t + 1)) {
+                flow.add_edge(out, indexer.in_node(cell, t + 1), 1);
+            }
         }
     }
 
@@ -376,18 +520,31 @@ PlanResult plan_flow_sync(
         for (int eidx = 0; eidx < num_edges; ++eidx) {
             int a = undirected_edges[eidx].first;
             int b = undirected_edges[eidx].second;
+            bool move_ab = active(a, t) && active(b, t + 1);
+            bool move_ba = active(b, t) && active(a, t + 1);
+            if (!move_ab && !move_ba) {
+                continue;
+            }
             int edge_in = edge_offset + (t * num_edges + eidx) * 2;
             int edge_out = edge_in + 1;
-            dinic.add_edge(indexer.out_node(a, t), edge_in, 1);
-            dinic.add_edge(indexer.out_node(b, t), edge_in, 1);
-            dinic.add_edge(edge_in, edge_out, 1);
-            dinic.add_edge(edge_out, indexer.in_node(a, t + 1), 1);
-            dinic.add_edge(edge_out, indexer.in_node(b, t + 1), 1);
+            if (move_ab) {
+                flow.add_edge(indexer.out_node(a, t), edge_in, 1);
+            }
+            if (move_ba) {
+                flow.add_edge(indexer.out_node(b, t), edge_in, 1);
+            }
+            flow.add_edge(edge_in, edge_out, 1);
+            if (move_ba) {
+                flow.add_edge(edge_out, indexer.in_node(a, t + 1), 1);
+            }
+            if (move_ab) {
+                flow.add_edge(edge_out, indexer.in_node(b, t + 1), 1);
+            }
         }
     }
 
     for (int sid : start_ids) {
-        dinic.add_edge(source, indexer.in_node(sid, 0), 1);
+        flow.add_edge(source, indexer.in_node(sid, 0), 1);
     }
 
     for (size_t i = 0; i < drop_ids.size(); ++i) {
@@ -397,16 +554,78 @@ PlanResult plan_flow_sync(
             continue;
         }
         int tnode = target_offset + static_cast<int>(i);
-        dinic.add_edge(tnode, sink, cap);
-        dinic.add_edge(indexer.out_node(tid, T), tnode, 1);
+        flow.add_edge(tnode, sink, cap);
+        flow.add_edge(indexer.out_node(tid, T), tnode, 1);
     }
 
-    int flow = dinic.max_flow(source, sink);
-    if (flow != static_cast<int>(starts.size())) {
+    int flow_value = flow.max_flow(source, sink);
+    if (flow_value != static_cast<int>(starts.size())) {
         return result;
     }
 
-    result.paths = extract_paths(dinic, graph, indexer, start_ids, source, sink);
+    result.paths = extract_paths(flow, graph, indexer, start_ids, source, sink);
     result.feasible = true;
     return result;
+}
+
+}  // namespace
+
+PlanResult plan_flow(
+    const std::vector<std::vector<int>>& grid,
+    const std::vector<std::pair<int, int>>& starts,
+    const std::vector<std::pair<int, int>>& targets,
+    const std::vector<int>& target_caps,
+    int T,
+    const std::vector<std::tuple<int, int, int>>& reserved,
+    const std::vector<std::tuple<int, int, int, int, int>>& reserved_edges) {
+    return plan_flow_impl<Dinic>(grid, starts, targets, target_caps, T, reserved, reserved_edges);
+}
+
+PlanResult plan_flow_with_method(
+    const std::vector<std::vector<int>>& grid,
+    const std::vector<std::pair<int, int>>& starts,
+    const std::vector<std::pair<int, int>>& targets,
+    const std::vector<int>& target_caps,
+    int T,
+    const std::vector<std::tuple<int, int, int>>& reserved,
+    const std::vector<std::tuple<int, int, int, int, int>>& reserved_edges,
+    const std::string& method) {
+    std::string key = normalize_method(method);
+    if (key.empty() || key == "dinic") {
+        return plan_flow_impl<Dinic>(grid, starts, targets, target_caps, T, reserved, reserved_edges);
+    }
+    if (key == "hlpp") {
+        return plan_flow_impl<HLPP>(grid, starts, targets, target_caps, T, reserved, reserved_edges);
+    }
+    throw std::invalid_argument("Unknown max-flow method: " + method);
+}
+
+PlanResult plan_flow_sync(
+    const std::vector<std::vector<int>>& grid,
+    const std::vector<std::pair<int, int>>& starts,
+    const std::vector<std::pair<int, int>>& pickups,
+    const std::vector<std::pair<int, int>>& drops,
+    const std::vector<int>& drop_caps,
+    int T,
+    int tau) {
+    return plan_flow_sync_impl<Dinic>(grid, starts, pickups, drops, drop_caps, T, tau);
+}
+
+PlanResult plan_flow_sync_with_method(
+    const std::vector<std::vector<int>>& grid,
+    const std::vector<std::pair<int, int>>& starts,
+    const std::vector<std::pair<int, int>>& pickups,
+    const std::vector<std::pair<int, int>>& drops,
+    const std::vector<int>& drop_caps,
+    int T,
+    int tau,
+    const std::string& method) {
+    std::string key = normalize_method(method);
+    if (key.empty() || key == "dinic") {
+        return plan_flow_sync_impl<Dinic>(grid, starts, pickups, drops, drop_caps, T, tau);
+    }
+    if (key == "hlpp") {
+        return plan_flow_sync_impl<HLPP>(grid, starts, pickups, drops, drop_caps, T, tau);
+    }
+    throw std::invalid_argument("Unknown max-flow method: " + method);
 }

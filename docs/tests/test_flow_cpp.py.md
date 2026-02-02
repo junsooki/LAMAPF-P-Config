@@ -7,6 +7,8 @@
 - `test_single_agent_reaches_target`：单机器人在无障碍格子内到达目标。
 - `test_two_agents_no_conflict`：两机器人在小网格内同时规划且无点冲突。
 - `test_same_target_different_times`：两机器人可在不同时间到达同一目标点。
+- `test_unreachable_target_infeasible`：不可达目标必须返回不可行。
+- `test_hlpp_solver_feasible`：HLPP 求解器可在简单场景下得到可行解。
 
 ## 断言点
 - `feasible == True`
