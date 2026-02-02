@@ -30,6 +30,13 @@ class MapEditor:
         self.tool = tk.StringVar(value="none")
         self.selected_map = None
         self.cell_size = 24
+        self.min_cell_size = 8
+        self.max_cell_size = 64
+        self.view_offset_x = 0.0
+        self.view_offset_y = 0.0
+        self._panning = False
+        self._pan_last = (0, 0)
+        self._space_down = False
 
         self.sim_mode = False
         self.sim_tasks: List[Dict] = []
@@ -94,16 +101,22 @@ class MapEditor:
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.canvas.bind("<Button-1>", self._on_click)
         self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_left_up)
         self.canvas.bind("<Motion>", self._on_hover)
+        self.canvas.bind("<MouseWheel>", self._on_zoom)
+        self.canvas.bind("<Button-4>", self._on_zoom)
+        self.canvas.bind("<Button-5>", self._on_zoom)
+        self.root.bind("<KeyPress-space>", self._on_space_down)
+        self.root.bind("<KeyRelease-space>", self._on_space_up)
 
     def _grid_to_canvas(self, x: int, y: int) -> Tuple[int, int, int, int]:
-        x0 = x * self.cell_size
-        y0 = y * self.cell_size
-        return x0, y0, x0 + self.cell_size, y0 + self.cell_size
+        x0 = x * self.cell_size + self.view_offset_x
+        y0 = y * self.cell_size + self.view_offset_y
+        return int(x0), int(y0), int(x0 + self.cell_size), int(y0 + self.cell_size)
 
     def _canvas_to_grid(self, event) -> Tuple[int, int]:
-        x = event.x // self.cell_size
-        y = event.y // self.cell_size
+        x = (event.x - self.view_offset_x) / self.cell_size
+        y = (event.y - self.view_offset_y) / self.cell_size
         return int(x), int(y)
 
     def _draw_all(self):
@@ -147,7 +160,39 @@ class MapEditor:
             )
         self.timestep_label.config(text=f"T={self.sim_timestep_var.get() if self.sim_mode else 0}")
 
+    def _on_zoom(self, event):
+        old_size = self.cell_size
+        delta = 0
+        if hasattr(event, "delta") and event.delta != 0:
+            delta = 1 if event.delta > 0 else -1
+        elif hasattr(event, "num"):
+            if event.num == 4:
+                delta = 1
+            elif event.num == 5:
+                delta = -1
+        if delta == 0:
+            return
+        step = max(1, int(self.cell_size * 0.12))
+        new_size = self.cell_size + delta * step
+        new_size = max(self.min_cell_size, min(self.max_cell_size, new_size))
+        if new_size == self.cell_size:
+            return
+        if old_size > 0:
+            grid_x = (event.x - self.view_offset_x) / old_size
+            grid_y = (event.y - self.view_offset_y) / old_size
+        else:
+            grid_x = 0.0
+            grid_y = 0.0
+        self.cell_size = new_size
+        self.view_offset_x = event.x - grid_x * new_size
+        self.view_offset_y = event.y - grid_y * new_size
+        self._draw_all()
+
     def _on_click(self, event):
+        if self.tool.get() == "none" or self._space_down:
+            self._panning = True
+            self._pan_last = (event.x, event.y)
+            return
         x, y = self._canvas_to_grid(event)
         if x < 0 or y < 0 or x >= self.state.width or y >= self.state.height:
             return
@@ -155,6 +200,14 @@ class MapEditor:
             self._draw_all()
 
     def _on_drag(self, event):
+        if self._panning:
+            dx = event.x - self._pan_last[0]
+            dy = event.y - self._pan_last[1]
+            self.view_offset_x += dx
+            self.view_offset_y += dy
+            self._pan_last = (event.x, event.y)
+            self._draw_all()
+            return
         x, y = self._canvas_to_grid(event)
         if x < 0 or y < 0 or x >= self.state.width or y >= self.state.height:
             return
@@ -162,6 +215,8 @@ class MapEditor:
             self._draw_all()
 
     def _on_hover(self, event):
+        if self._panning:
+            return
         x, y = self._canvas_to_grid(event)
         if self.sim_mode:
             for rid in sorted(self.sim_trajectories.keys()):
@@ -179,6 +234,15 @@ class MapEditor:
             self.status_label.config(text=f"Agent {idx + 1}")
         else:
             self.status_label.config(text="Hover agent to see state")
+
+    def _on_left_up(self, _event):
+        self._panning = False
+
+    def _on_space_down(self, _event):
+        self._space_down = True
+
+    def _on_space_up(self, _event):
+        self._space_down = False
 
     def _apply_tool(self, x: int, y: int, drag: bool = False) -> bool:
         tool = self.tool.get()
@@ -202,8 +266,6 @@ class MapEditor:
                 return True
             return False
         if tool == "goal":
-            if drag:
-                return False
             if (x, y) not in self.state.goals and self.state.cells[y][x] == 0:
                 self.state.goals.append((x, y))
                 return True
