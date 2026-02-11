@@ -304,6 +304,47 @@ def explain_infeasible(
     }
 
 
+def explain_infeasible_sync(
+    grid: List[List[int]],
+    robots: List[RobotState],
+    pickup_points: List[Tuple[int, int]],
+    drop_points: List[Tuple[int, int]],
+):
+    if not robots:
+        return {"unreachable_starts": [], "reachable_pickups": 0, "tau_min": 0, "min_drop_needed": 0}
+    grid_cache = _get_grid_cache(grid)
+    dist_to_pick = _bfs_multi_source(grid_cache, pickup_points, use_cache=False)
+    dist_to_drop = _bfs_multi_source(grid_cache, drop_points, use_cache=True)
+    width = grid_cache["width"]
+
+    unreachable_starts = []
+    tau_min = 0
+    for r in robots:
+        idx = r.pos[1] * width + r.pos[0]
+        d = dist_to_pick[idx]
+        if d < 0:
+            unreachable_starts.append(r.pos)
+        else:
+            tau_min = max(tau_min, d)
+
+    pickup_drop_dists = []
+    for px, py in pickup_points:
+        idx = py * width + px
+        d = dist_to_drop[idx]
+        if d >= 0:
+            pickup_drop_dists.append(d)
+    pickup_drop_dists.sort()
+    reachable_pickups = len(pickup_drop_dists)
+    min_drop_needed = pickup_drop_dists[len(robots) - 1] if reachable_pickups >= len(robots) else None
+
+    return {
+        "unreachable_starts": unreachable_starts,
+        "reachable_pickups": reachable_pickups,
+        "tau_min": tau_min,
+        "min_drop_needed": min_drop_needed,
+    }
+
+
 def search_min_T(
     grid: List[List[int]],
     robots: List[RobotState],
@@ -380,6 +421,7 @@ def search_min_T_sync(
     T_max: int,
     method: str = "dinic",
     parallel_workers: int = 1,
+    parallel_T_workers: int = 1,
     verbose: bool = False,
     progress_every: int = 25,
 ):
@@ -413,13 +455,27 @@ def search_min_T_sync(
         return None, None, {}
     min_drop_needed = pickup_drop_dists[len(robots) - 1]
 
-    def try_T(T: int):
+    total_workers = max(1, parallel_workers)
+    t_workers = max(1, min(parallel_T_workers, total_workers))
+
+    def _tau_workers_for(active_Ts: int, t_parallel: bool) -> int:
+        if active_Ts <= 0:
+            return 0
+        if t_parallel:
+            budget = max(0, total_workers - active_Ts)
+            if budget <= 1:
+                return budget
+            return budget // active_Ts
+        budget = max(0, total_workers - 1)
+        return budget
+
+    def try_T(T: int, tau_workers: int):
         tau_max = T - min_drop_needed
         if tau_max < tau_min:
             return False, None, {}
         if verbose:
             print(f"[sync-search] T={T}/{T_max} tau={tau_min}..{tau_max}")
-        if parallel_workers <= 1:
+        if tau_workers <= 1:
             for tau in range(tau_min, tau_max + 1):
                 if verbose and progress_every > 0 and tau % progress_every == 0 and tau != 0:
                     print(f"[sync-search] T={T} tau={tau}/{T}")
@@ -440,8 +496,8 @@ def search_min_T_sync(
             )
             return tau, res
 
-        batch_size = max(1, parallel_workers)
-        with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
+        batch_size = max(1, tau_workers)
+        with ThreadPoolExecutor(max_workers=tau_workers) as executor:
             for batch_start in range(tau_min, tau_max + 1, batch_size):
                 batch_end = min(tau_max + 1, batch_start + batch_size)
                 batch = list(range(batch_start, batch_end))
@@ -461,32 +517,119 @@ def search_min_T_sync(
     if lower_T > T_max:
         return None, None, {}
 
+    if t_workers <= 1:
+        tau_workers = _tau_workers_for(1, False)
+        if lower_T == 0:
+            ok, tau, paths = try_T(0, tau_workers)
+            if ok:
+                return 0, tau, paths
+        last_fail = lower_T - 1
+        high = max(1, lower_T)
+
+        while high <= T_max:
+            ok, tau, paths = try_T(high, tau_workers)
+            if ok:
+                break
+            last_fail = high
+            high *= 2
+
+        if high > T_max:
+            ok, tau, paths = try_T(T_max, tau_workers)
+            if not ok:
+                return None, None, {}
+            high = T_max
+
+        for T in range(last_fail + 1, high + 1):
+            ok, tau, paths = try_T(T, tau_workers)
+            if ok:
+                return T, tau, paths
+
+        return None, None, {}
+
+    def eval_batch(values: List[int]):
+        results = {}
+        if not values:
+            return results
+        active_Ts = len(values)
+        tau_workers = _tau_workers_for(active_Ts, True)
+        with ThreadPoolExecutor(max_workers=min(t_workers, active_Ts)) as executor:
+            futures = {executor.submit(try_T, T, tau_workers): T for T in values}
+            for fut, T in futures.items():
+                ok, tau, paths = fut.result()
+                results[T] = (ok, tau, paths)
+        return results
+
     if lower_T == 0:
-        ok, tau, paths = try_T(0)
+        ok, tau, paths = try_T(0, _tau_workers_for(1, False))
         if ok:
             return 0, tau, paths
-    last_fail = lower_T - 1
-    high = max(1, lower_T)
+        low = 0
+        start = 1
+    else:
+        low = lower_T - 1
+        start = lower_T
 
-    while high <= T_max:
-        ok, tau, paths = try_T(high)
-        if ok:
-            break
-        last_fail = high
-        high *= 2
+    high = None
+    best_tau = None
+    best_paths: Dict[int, List[Tuple[int, int]]] = {}
 
-    if high > T_max:
-        ok, tau, paths = try_T(T_max)
-        if not ok:
+    while True:
+        if start > T_max:
             return None, None, {}
-        high = T_max
+        candidates = []
+        val = start
+        for _ in range(t_workers):
+            if val > T_max:
+                break
+            candidates.append(val)
+            val *= 2
+        results = eval_batch(candidates)
+        min_feasible = None
+        max_infeasible = None
+        for T, (ok, tau, paths) in results.items():
+            if ok:
+                if min_feasible is None or T < min_feasible:
+                    min_feasible = T
+                    best_tau = tau
+                    best_paths = paths
+            else:
+                if max_infeasible is None or T > max_infeasible:
+                    max_infeasible = T
+        if min_feasible is not None:
+            high = min_feasible
+            if max_infeasible is not None:
+                low = max(low, max_infeasible)
+            break
+        if max_infeasible is not None:
+            low = max(low, max_infeasible)
+        start = val
 
-    for T in range(last_fail + 1, high + 1):
-        ok, tau, paths = try_T(T)
-        if ok:
-            return T, tau, paths
+    while low + 1 < high:
+        candidates = []
+        step = 1
+        while len(candidates) < t_workers and low + step < high:
+            candidates.append(low + step)
+            step *= 2
+        results = eval_batch(candidates)
+        min_feasible = None
+        max_infeasible = None
+        for T, (ok, tau, paths) in results.items():
+            if ok:
+                if min_feasible is None or T < min_feasible:
+                    min_feasible = T
+                    best_tau = tau
+                    best_paths = paths
+            else:
+                if max_infeasible is None or T > max_infeasible:
+                    max_infeasible = T
+        if min_feasible is not None:
+            high = min_feasible
+        if max_infeasible is not None:
+            low = max(low, max_infeasible)
 
-    return None, None, {}
+    if high is None:
+        return None, None, {}
+    return high, best_tau, best_paths
 
 
 def plan_round_sync(
@@ -498,6 +641,7 @@ def plan_round_sync(
     T_max: int,
     method: str = "dinic",
     parallel_workers: int = 1,
+    parallel_T_workers: int = 1,
     verbose: bool = False,
     progress_every: int = 25,
 ):
@@ -514,6 +658,7 @@ def plan_round_sync(
         T_max,
         method=method,
         parallel_workers=parallel_workers,
+        parallel_T_workers=parallel_T_workers,
         verbose=verbose,
         progress_every=progress_every,
     )

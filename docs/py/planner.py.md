@@ -40,11 +40,12 @@ def search_min_T_sync(...):
   - `verbose`：打印搜索进度
   - `progress_every`：每隔多少个 `tau` 打印一次
   - `method`：最大流求解器（`dinic`/`hlpp`）
-  - `parallel_workers`：并行搜索 `tau` 的线程数（>1 时启用）
+  - `parallel_workers`：总线程预算（同时用于 `T` 与 `tau`）
+  - `parallel_T_workers`：并行搜索 `T` 的最大线程数（>1 时启用）
 
 ### plan_round_sync(...)
 ```python
-def plan_round_sync(..., method="dinic", parallel_workers=1):
+def plan_round_sync(..., method="dinic", parallel_workers=1, parallel_T_workers=1):
     """同步模型：返回 (T, tau, paths)，强制所有机器人在 tau 取货、在 T 卸货。"""
 ```
 
@@ -67,3 +68,4 @@ def explain_infeasible(...):
 - 路径按机器人 id 输出，时间从 t0=0 开始。
 - 模块会尝试从 `build/` 目录加载 `flow_planner_cpp` 扩展。
 - `method` 透传到 C++ 最大流实现（`dinic` 或 `hlpp`）。
+- 当 `parallel_T_workers > 1` 时，会先并行 `T`；剩余线程预算按当前并行的 `T` 数量均分给 `tau` 搜索（若均分后 ≤1，则 `tau` 仍按串行执行）。

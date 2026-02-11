@@ -4,7 +4,8 @@ import math
 import os
 import random
 import sys
-from typing import Dict, List, Tuple
+from collections import deque
+from typing import Dict, Iterable, List, Set, Tuple
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
 
@@ -17,21 +18,35 @@ def load_map(map_path: str) -> Dict:
         return json.load(f)
 
 
-def random_free_positions(cells: List[List[int]], count: int, avoid: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-    height = len(cells)
-    width = len(cells[0]) if height > 0 else 0
-    candidates = []
-    avoid_set = set(avoid)
-    for y in range(height):
-        for x in range(width):
-            if cells[y][x] == 1:
-                continue
-            if (x, y) in avoid_set:
-                continue
-            candidates.append((x, y))
+def random_free_positions(
+    candidates: List[Tuple[int, int]],
+    count: int,
+) -> List[Tuple[int, int]]:
     if count > len(candidates):
         raise ValueError("Not enough free cells for agents")
     return random.sample(candidates, count)
+
+
+def reachable_cells(cells: List[List[int]], sources: Iterable[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+    height = len(cells)
+    width = len(cells[0]) if height > 0 else 0
+    visited: Set[Tuple[int, int]] = set()
+    queue = deque()
+    for sx, sy in sources:
+        if 0 <= sx < width and 0 <= sy < height and cells[sy][sx] != 1:
+            if (sx, sy) not in visited:
+                visited.add((sx, sy))
+                queue.append((sx, sy))
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < width and 0 <= ny < height and cells[ny][nx] != 1:
+                pos = (nx, ny)
+                if pos not in visited:
+                    visited.add(pos)
+                    queue.append(pos)
+    return visited
 
 
 def ensure_tasks(
@@ -79,6 +94,7 @@ def run_simulation(
     seed: int,
     solver: str = "dinic",
     workers: int = 1,
+    t_workers: int = 1,
     debug: bool = False,
     debug_every: int = 25,
 ) -> None:
@@ -102,7 +118,25 @@ def run_simulation(
     if not shelf_cells:
         raise ValueError("No shelf cells in map")
 
-    starts = random_free_positions(cells, agent_count, avoid=goals)
+    reachable = reachable_cells(cells, shelf_cells)
+    avoid_set = set(goals)
+    start_candidates = []
+    for y in range(height):
+        for x in range(width):
+            if cells[y][x] == 1:
+                continue
+            pos = (x, y)
+            if pos in avoid_set:
+                continue
+            if pos not in reachable:
+                continue
+            start_candidates.append(pos)
+    if agent_count > len(start_candidates):
+        raise RuntimeError(
+            "Not enough reachable free cells to place agents. "
+            f"need={agent_count} reachable={len(start_candidates)}"
+        )
+    starts = random_free_positions(start_candidates, agent_count)
 
     agents: Dict[int, Dict] = {}
     trajectories: Dict[int, List[Tuple[int, int]]] = {}
@@ -152,14 +186,20 @@ def run_simulation(
             T_max=max_timestep,
             method=solver,
             parallel_workers=workers,
+            parallel_T_workers=t_workers,
             verbose=debug,
             progress_every=debug_every,
         )
         if T is None or tau is None:
+            from planner import explain_infeasible_sync
+
+            reasons = explain_infeasible_sync(grid, robots, pickup_points, goals)
             diagnostics = (
                 f"Sync planning failed at timestep {current_timestep}. "
                 f"agents={agent_count}, pickup_points={len(pickup_points)}, goals={len(goals)}, "
-                f"max_timestep={max_timestep}."
+                f"max_timestep={max_timestep}, unreachable_starts={reasons['unreachable_starts']}, "
+                f"reachable_pickups={reasons['reachable_pickups']}, tau_min={reasons['tau_min']}, "
+                f"min_drop_needed={reasons['min_drop_needed']}."
             )
             raise RuntimeError(diagnostics)
 
@@ -224,6 +264,7 @@ def run_simulation(
         "seed": seed,
         "solver": solver,
         "solver_workers": workers,
+        "solver_t_workers": t_workers,
         "stats": stats,
         "agents": {
             str(rid): {
@@ -374,7 +415,8 @@ def main() -> None:
     parser.add_argument("--output", default="simulation_output.json", help="Output JSON path")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--solver", default="dinic", help="Max-flow solver: dinic or hlpp")
-    parser.add_argument("--workers", type=int, default=1, help="Parallel tau workers (threaded)")
+    parser.add_argument("--workers", type=int, default=1, help="Total worker budget for parallel search")
+    parser.add_argument("--t_workers", type=int, default=1, help="Max parallel T workers (threaded)")
     parser.add_argument("--debug", action="store_true", help="Print sync search progress")
     parser.add_argument("--debug_every", type=int, default=25, help="Tau progress print interval")
     args = parser.parse_args()
@@ -387,6 +429,7 @@ def main() -> None:
         args.seed,
         solver=args.solver,
         workers=args.workers,
+        t_workers=args.t_workers,
         debug=args.debug,
         debug_every=args.debug_every,
     )
