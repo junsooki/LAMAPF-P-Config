@@ -8,8 +8,8 @@ from typing import Dict, List, Tuple
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
 
-from data_types import RobotState
-from planner import plan_round
+from data_types import RobotState, DIR_EAST
+from planner import plan_round, plan_round_rot
 
 
 def load_map(map_path: str) -> Dict:
@@ -79,6 +79,7 @@ def run_simulation(
     seed: int,
     solver: str = "dinic",
     debug: bool = False,
+    rotation: bool = False,
 ) -> None:
     random.seed(seed)
     data = load_map(map_path)
@@ -109,6 +110,7 @@ def run_simulation(
             "pos": pos,
             "state": "Empty",
             "carrying": None,
+            "facing": DIR_EAST,
         }
         trajectories[i] = [pos]
 
@@ -142,9 +144,13 @@ def run_simulation(
         robots: List[RobotState] = []
         for rid in sorted(agents.keys()):
             agent = agents[rid]
-            robots.append(RobotState(id=rid, pos=agent["pos"], state=agent["state"]))
+            robots.append(RobotState(id=rid, pos=agent["pos"], state=agent["state"], facing=agent["facing"]))
 
-        T, paths = plan_round(grid, robots, pickup_points, goals, drop_caps, T_max=max_timestep, method=solver)
+        if rotation:
+            T, paths, path_dirs = plan_round_rot(grid, robots, pickup_points, goals, drop_caps, T_max=max_timestep, method=solver)
+        else:
+            T, paths = plan_round(grid, robots, pickup_points, goals, drop_caps, T_max=max_timestep, method=solver)
+            path_dirs = {}
         if T is None:
             empty_count = sum(1 for r in robots if r.state == "Empty")
             loaded_count = sum(1 for r in robots if r.state == "Loaded")
@@ -201,6 +207,10 @@ def run_simulation(
             path = paths.get(rid, [])
             if path:
                 agents[rid]["pos"] = path[min(delta, len(path) - 1)]
+            if rotation and rid in path_dirs:
+                dirs = path_dirs[rid]
+                if dirs:
+                    agents[rid]["facing"] = dirs[min(delta, len(dirs) - 1)]
 
         for rid, arrival in arrival_times.items():
             if arrival != delta:
@@ -293,6 +303,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--solver", default="dinic", help="Max-flow solver: dinic or hlpp")
     parser.add_argument("--debug", action="store_true", help="Print debug info per planning round")
+    parser.add_argument("--rotation", action="store_true", help="Enable rotation-aware planning")
     args = parser.parse_args()
 
     run_simulation(
@@ -303,6 +314,7 @@ def main() -> None:
         args.seed,
         solver=args.solver,
         debug=args.debug,
+        rotation=args.rotation,
     )
 
 

@@ -9,7 +9,7 @@ from typing import Dict, Iterable, List, Set, Tuple
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
 
-from data_types import RobotState
+from data_types import RobotState, DIR_EAST
 from planner import plan_round_sync
 
 
@@ -143,6 +143,7 @@ def run_simulation(
     for i, pos in enumerate(starts, start=1):
         agents[i] = {
             "pos": pos,
+            "facing": DIR_EAST,
         }
         trajectories[i] = [pos]
 

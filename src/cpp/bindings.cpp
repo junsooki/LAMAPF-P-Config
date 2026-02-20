@@ -29,6 +29,29 @@ PYBIND11_MODULE(flow_planner_cpp, m) {
     }, py::arg("grid"), py::arg("starts"), py::arg("targets"), py::arg("target_caps"), py::arg("T"),
        py::arg("reserved"), py::arg("reserved_edges"), py::arg("method") = "dinic");
 
+    m.def("plan_flow_rot", [](const std::vector<std::vector<int>>& grid,
+                               const std::vector<std::pair<int, int>>& starts,
+                               const std::vector<int>& start_dirs,
+                               const std::vector<std::pair<int, int>>& targets,
+                               const std::vector<int>& target_caps,
+                               int T,
+                               const std::vector<std::tuple<int, int, int>>& reserved,
+                               const std::vector<std::tuple<int, int, int, int, int>>& reserved_edges,
+                               const std::string& method) {
+        PlanResult result;
+        {
+            py::gil_scoped_release release;
+            result = plan_flow_rot_with_method(
+                grid, starts, start_dirs, targets, target_caps, T, reserved, reserved_edges, method);
+        }
+        py::dict out;
+        out["feasible"] = result.feasible;
+        out["paths"] = result.paths;
+        out["path_dirs"] = result.path_dirs;
+        return out;
+    }, py::arg("grid"), py::arg("starts"), py::arg("start_dirs"), py::arg("targets"), py::arg("target_caps"), py::arg("T"),
+       py::arg("reserved"), py::arg("reserved_edges"), py::arg("method") = "dinic");
+
     m.def("plan_flow_sync", [](const std::vector<std::vector<int>>& grid,
                                 const std::vector<std::pair<int, int>>& starts,
                                 const std::vector<std::pair<int, int>>& pickups,

@@ -5,7 +5,7 @@ from collections import deque
 import os
 import sys
 
-from data_types import RobotState
+from data_types import RobotState, DIR_EAST
 from utils import pad_path
 
 
@@ -661,4 +661,232 @@ def plan_round_sync(
         parallel_T_workers=parallel_T_workers,
         verbose=verbose,
         progress_every=progress_every,
+    )
+
+
+# --- Rotation-aware planning ---
+
+
+def _find_min_T_single_rot(
+    grid: List[List[int]],
+    starts: List[Tuple[int, int]],
+    start_dirs: List[int],
+    targets: List[Tuple[int, int]],
+    caps: List[int],
+    reserved_v: List[Tuple[int, int, int]],
+    reserved_e: List[Tuple[int, int, int, int, int]],
+    T_max: int,
+    method: str = "dinic",
+    verbose: bool = False,
+):
+    if not starts:
+        return 0, [], []
+    if T_max < 0:
+        return None, [], []
+
+    def feasible(T: int):
+        if verbose:
+            print(f"[flow-rot] T={T}")
+        res = flow_planner_cpp.plan_flow_rot(
+            grid, starts, start_dirs, targets, caps, T, reserved_v, reserved_e, method
+        )
+        return res["feasible"], res["paths"], res["path_dirs"]
+
+    low = 0
+    high = 1
+    best_paths: List = []
+    best_dirs: List = []
+
+    while high <= T_max:
+        ok, paths, dirs = feasible(high)
+        if ok:
+            best_paths = paths
+            best_dirs = dirs
+            break
+        low = high + 1
+        high *= 2
+
+    if high > T_max:
+        ok, paths, dirs = feasible(T_max)
+        if not ok:
+            return None, [], []
+        high = T_max
+        best_paths = paths
+        best_dirs = dirs
+
+    while low <= high:
+        mid = (low + high) // 2
+        ok, paths, dirs = feasible(mid)
+        if ok:
+            best_paths = paths
+            best_dirs = dirs
+            high = mid - 1
+        else:
+            low = mid + 1
+
+    return low, best_paths, best_dirs
+
+
+def _plan_with_order_rot(
+    grid: List[List[int]],
+    robots: List[RobotState],
+    pickup_points: List[Tuple[int, int]],
+    drop_points: List[Tuple[int, int]],
+    drop_caps: Dict[Tuple[int, int], int],
+    T: int,
+    first_loaded: bool,
+    method: str = "dinic",
+):
+    loaded = [r for r in robots if r.state == "Loaded"]
+    empty = [r for r in robots if r.state == "Empty"]
+    drop_caps_list = [drop_caps.get(p, 1) for p in drop_points]
+
+    def plan_loaded(reserved_v, reserved_e):
+        if not loaded:
+            return True, [], [], [], []
+        t_loaded, paths_loaded, dirs_loaded = _find_min_T_single_rot(
+            grid,
+            [r.pos for r in loaded],
+            [r.facing for r in loaded],
+            drop_points,
+            drop_caps_list,
+            reserved_v,
+            reserved_e,
+            T,
+            method=method,
+        )
+        if t_loaded is None:
+            return False, [], [], [], []
+        return (
+            True,
+            paths_loaded,
+            dirs_loaded,
+            build_reserved_vertices(paths_loaded),
+            build_reserved_edges(paths_loaded),
+        )
+
+    def plan_empty(reserved_v, reserved_e):
+        if not empty:
+            return True, [], []
+        t_empty, paths_empty, dirs_empty = _find_min_T_single_rot(
+            grid,
+            [r.pos for r in empty],
+            [r.facing for r in empty],
+            pickup_points,
+            [1] * len(pickup_points),
+            reserved_v,
+            reserved_e,
+            T,
+            method=method,
+        )
+        if t_empty is None:
+            return False, [], []
+        return True, paths_empty, dirs_empty
+
+    if first_loaded:
+        ok_l, paths_loaded, dirs_loaded, res_v, res_e = plan_loaded([], [])
+        if not ok_l:
+            return False, {}, {}, "loaded_stage_infeasible"
+        ok_e, paths_empty, dirs_empty = plan_empty(res_v, res_e)
+        if not ok_e:
+            return False, {}, {}, "empty_stage_infeasible"
+    else:
+        ok_e, paths_empty, dirs_empty = plan_empty([], [])
+        if not ok_e:
+            return False, {}, {}, "empty_stage_infeasible"
+        res_v = build_reserved_vertices(paths_empty)
+        res_e = build_reserved_edges(paths_empty)
+        ok_l, paths_loaded, dirs_loaded, _, _ = plan_loaded(res_v, res_e)
+        if not ok_l:
+            return False, {}, {}, "loaded_stage_infeasible"
+
+    paths_by_id: Dict[int, List[Tuple[int, int]]] = {}
+    dirs_by_id: Dict[int, List[int]] = {}
+    for robot, path, dirs in zip(loaded, paths_loaded, dirs_loaded):
+        paths_by_id[robot.id] = pad_path(path, T)
+        # Pad dirs: extend last direction
+        padded_dirs = list(dirs)
+        if padded_dirs:
+            while len(padded_dirs) < T + 1:
+                padded_dirs.append(padded_dirs[-1])
+        dirs_by_id[robot.id] = padded_dirs
+    for robot, path, dirs in zip(empty, paths_empty, dirs_empty):
+        paths_by_id[robot.id] = pad_path(path, T)
+        padded_dirs = list(dirs)
+        if padded_dirs:
+            while len(padded_dirs) < T + 1:
+                padded_dirs.append(padded_dirs[-1])
+        dirs_by_id[robot.id] = padded_dirs
+    return True, paths_by_id, dirs_by_id, ""
+
+
+def search_min_T_rot(
+    grid: List[List[int]],
+    robots: List[RobotState],
+    pickup_points: List[Tuple[int, int]],
+    drop_points: List[Tuple[int, int]],
+    drop_caps: Dict[Tuple[int, int], int],
+    T_max: int,
+    method: str = "dinic",
+):
+    def try_T(T: int):
+        ok, paths, dirs, _ = _plan_with_order_rot(
+            grid, robots, pickup_points, drop_points, drop_caps, T, True, method
+        )
+        if ok:
+            return True, paths, dirs
+        ok, paths, dirs, _ = _plan_with_order_rot(
+            grid, robots, pickup_points, drop_points, drop_caps, T, False, method
+        )
+        return ok, paths, dirs
+
+    if T_max < 0:
+        return None, {}, {}
+
+    low = 0
+    high = 1
+    best_paths: Dict[int, List[Tuple[int, int]]] = {}
+    best_dirs: Dict[int, List[int]] = {}
+
+    while high <= T_max:
+        ok, paths, dirs = try_T(high)
+        if ok:
+            best_paths = paths
+            best_dirs = dirs
+            break
+        low = high + 1
+        high *= 2
+
+    if high > T_max:
+        ok, paths, dirs = try_T(T_max)
+        if not ok:
+            return None, {}, {}
+        high = T_max
+        best_paths = paths
+        best_dirs = dirs
+
+    while low <= high:
+        mid = (low + high) // 2
+        ok, paths, dirs = try_T(mid)
+        if ok:
+            best_paths = paths
+            best_dirs = dirs
+            high = mid - 1
+        else:
+            low = mid + 1
+
+    return low, best_paths, best_dirs
+
+
+def plan_round_rot(
+    grid: List[List[int]],
+    robots: List[RobotState],
+    pickup_points: List[Tuple[int, int]],
+    drop_points: List[Tuple[int, int]],
+    drop_caps: Dict[Tuple[int, int], int],
+    T_max: int,
+    method: str = "dinic",
+):
+    return search_min_T_rot(
+        grid, robots, pickup_points, drop_points, drop_caps, T_max, method=method
     )

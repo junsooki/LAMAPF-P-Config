@@ -8,6 +8,7 @@
 struct PlanResult {
     bool feasible;
     std::vector<std::vector<std::pair<int, int>>> paths;
+    std::vector<std::vector<int>> path_dirs;
 };
 
 PlanResult plan_flow(
@@ -46,4 +47,28 @@ PlanResult plan_flow_sync_with_method(
     const std::vector<int>& drop_caps,
     int T,
     int tau,
+    const std::string& method);
+
+// Rotation-aware variants: state space is (cell, dir, t)
+// dir: 0=EAST, 1=WEST, 2=SOUTH, 3=NORTH
+
+PlanResult plan_flow_rot(
+    const std::vector<std::vector<int>>& grid,
+    const std::vector<std::pair<int, int>>& starts,
+    const std::vector<int>& start_dirs,
+    const std::vector<std::pair<int, int>>& targets,
+    const std::vector<int>& target_caps,
+    int T,
+    const std::vector<std::tuple<int, int, int>>& reserved,
+    const std::vector<std::tuple<int, int, int, int, int>>& reserved_edges);
+
+PlanResult plan_flow_rot_with_method(
+    const std::vector<std::vector<int>>& grid,
+    const std::vector<std::pair<int, int>>& starts,
+    const std::vector<int>& start_dirs,
+    const std::vector<std::pair<int, int>>& targets,
+    const std::vector<int>& target_caps,
+    int T,
+    const std::vector<std::tuple<int, int, int>>& reserved,
+    const std::vector<std::tuple<int, int, int, int, int>>& reserved_edges,
     const std::string& method);
