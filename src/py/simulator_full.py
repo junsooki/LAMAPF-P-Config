@@ -241,11 +241,14 @@ def run_simulation(
 
     _validate_collision_free(trajectories)
 
+    stats = _compute_stats(tasks, trajectories)
+
     output = {
         "map": map_path,
         "max_timestep": max_timestep,
         "seed": seed,
         "solver": solver,
+        "stats": stats,
         "agents": {
             str(rid): {
                 "trajectory": trajectories[rid],
@@ -268,6 +271,66 @@ def run_simulation(
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2)
+
+
+def _compute_stats(tasks: List[Dict], trajectories: Dict[int, List[Tuple[int, int]]]) -> Dict:
+    def _avg(values: List[int]):
+        if not values:
+            return None
+        return sum(values) / len(values)
+
+    sim_end_timestep = 0
+    if trajectories:
+        sim_end_timestep = max(len(traj) - 1 for traj in trajectories.values())
+
+    tasks_total = len(tasks)
+    picked = [t for t in tasks if t["picked_time"] is not None]
+    delivered = [t for t in tasks if t["delivered_time"] is not None]
+
+    pickup_waits = [t["picked_time"] - t["spawn_time"] for t in picked]
+    delivery_times = [t["delivered_time"] - t["spawn_time"] for t in delivered]
+    carry_times = [
+        t["delivered_time"] - t["picked_time"]
+        for t in delivered
+        if t["picked_time"] is not None
+    ]
+
+    idle_steps = 0
+    total_steps = 0
+    for traj in trajectories.values():
+        for i in range(1, len(traj)):
+            total_steps += 1
+            if traj[i] == traj[i - 1]:
+                idle_steps += 1
+
+    backlog_over_time: List[int] = []
+    for t in range(sim_end_timestep + 1):
+        backlog = 0
+        for task in tasks:
+            spawn = task["spawn_time"]
+            picked_time = task["picked_time"]
+            if spawn <= t and (picked_time is None or picked_time > t):
+                backlog += 1
+        backlog_over_time.append(backlog)
+
+    return {
+        "sim_end_timestep": sim_end_timestep,
+        "agents": len(trajectories),
+        "tasks_total": tasks_total,
+        "tasks_picked": len(picked),
+        "tasks_delivered": len(delivered),
+        "tasks_unpicked": tasks_total - len(picked),
+        "tasks_undelivered": tasks_total - len(delivered),
+        "throughput_picked_per_timestep": len(picked) / max(1, sim_end_timestep),
+        "throughput_delivered_per_timestep": len(delivered) / max(1, sim_end_timestep),
+        "avg_pickup_wait": _avg(pickup_waits),
+        "avg_delivery_time": _avg(delivery_times),
+        "avg_carry_time": _avg(carry_times),
+        "avg_backlog": _avg(backlog_over_time),
+        "max_backlog": max(backlog_over_time) if backlog_over_time else 0,
+        "idle_ratio": idle_steps / total_steps if total_steps > 0 else None,
+        "move_ratio": (total_steps - idle_steps) / total_steps if total_steps > 0 else None,
+    }
 
 
 def _validate_collision_free(trajectories: Dict[int, List[Tuple[int, int]]]) -> None:

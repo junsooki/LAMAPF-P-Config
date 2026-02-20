@@ -35,7 +35,7 @@ def parse_smart_paths(path):
     return paths
 
 
-def render_frame(grid, paths, goals, t, T):
+def render_frame(grid, paths, goals, t, T, throughput_text=""):
     H = len(grid)
     W = len(grid[0])
     cs = 0.6
@@ -74,7 +74,12 @@ def render_frame(grid, paths, goals, t, T):
         ax.add_patch(plt.Circle((x, y), 0.35, color=color, ec="black", lw=1.2, zorder=5))
         ax.text(x, y, str(aid), ha="center", va="center", fontsize=8, fontweight="bold", color="white", zorder=6)
 
+    if throughput_text:
+        fig.text(0.05, 0.01, throughput_text, fontsize=8, color="#555555", va="bottom")
+
     plt.tight_layout()
+    if throughput_text:
+        fig.subplots_adjust(bottom=0.08)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
     plt.close(fig)
@@ -97,12 +102,25 @@ def main():
     T = max(len(p) - 1 for p in paths.values())
     goals = [p[-1] for p in paths.values()]
 
+    # Precompute arrival timestep for each agent (first time reaching final waypoint)
+    arrival_by_agent = {}
+    for aid, p in paths.items():
+        dest = p[-1]
+        for step, pos in enumerate(p):
+            if pos == dest:
+                arrival_by_agent[aid] = step
+                break
+
     frames = []
     for t in range(T + 1):
-        frames.append(render_frame(grid, paths, goals, t, T))
+        arrived = sum(1 for at in arrival_by_agent.values() if at <= t)
+        rate = arrived / t if t > 0 else 0.0
+        tp_text = f"Arrived: {arrived}/{len(paths)} | Throughput: {rate:.2f}/t"
+        frames.append(render_frame(grid, paths, goals, t, T, tp_text))
     # Hold last frame
-    frames.append(render_frame(grid, paths, goals, T, T))
-    frames.append(render_frame(grid, paths, goals, T, T))
+    tp_last = f"Arrived: {len(arrival_by_agent)}/{len(paths)} | Throughput: {len(arrival_by_agent) / max(1, T):.2f}/t"
+    frames.append(render_frame(grid, paths, goals, T, T, tp_last))
+    frames.append(render_frame(grid, paths, goals, T, T, tp_last))
 
     frames[0].save(args.output, save_all=True, append_images=frames[1:], duration=args.duration, loop=0)
     print(f"Saved {len(frames)} frames to {args.output}")

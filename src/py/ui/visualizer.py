@@ -23,6 +23,7 @@ class PlanPlayer:
         agent_ids: List[int],
         start_timestep: int,
         end_timestep: int,
+        tasks: List[Dict] = None,
     ):
         self.paths = paths
         self.agent_ids = agent_ids
@@ -30,6 +31,7 @@ class PlanPlayer:
         self.start_timestep = start_timestep
         self.end_timestep = end_timestep
         self.max_step = max(0, end_timestep - start_timestep)
+        self.tasks = tasks or []
 
     def play(self, delay_ms: int = 200):
         self.running = True
@@ -72,9 +74,21 @@ class PlanPlayer:
         self._advance()
         self._after_id = self.canvas.after(delay_ms, lambda: self._tick(delay_ms))
 
+    def throughput_text(self) -> str:
+        if not self.tasks:
+            return ""
+        t = self.start_timestep + self.step_idx
+        delivered = sum(
+            1 for task in self.tasks
+            if task.get("delivered_time") is not None and task["delivered_time"] <= t
+        )
+        rate = delivered / t if t > 0 else 0.0
+        return f"Delivered: {delivered} | Throughput: {rate:.2f}/t"
+
     def draw(self):
         self.canvas.delete("agent")
         self.canvas.delete("agent_static")
+        self.canvas.delete("throughput")
         for rid in self.agent_ids:
             path = self.paths.get(rid, [])
             if not path:
@@ -87,4 +101,11 @@ class PlanPlayer:
             y1 = y0 + self.cell_size
             self.canvas.create_oval(
                 x0 + 4, y0 + 4, x1 - 4, y1 - 4, fill="#2c7be5", outline="", tags="agent"
+            )
+        tp = self.throughput_text()
+        if tp:
+            self.canvas.create_text(
+                5, self.canvas.winfo_height() - 5,
+                text=tp, anchor="sw", font=("TkDefaultFont", 9),
+                fill="#555555", tags="throughput",
             )
