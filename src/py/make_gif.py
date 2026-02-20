@@ -54,6 +54,7 @@ def render_frame(
     timestep: int,
     title: str,
     cell_size: float = 0.5,
+    throughput_text: str = "",
 ) -> Image.Image:
     height = len(cells)
     width = len(cells[0]) if height > 0 else 0
@@ -103,7 +104,11 @@ def render_frame(
                     zorder=5,
                 )
 
+    if throughput_text:
+        fig.text(0.05, 0.01, throughput_text, fontsize=8, color="#555555", va="bottom")
+
     plt.tight_layout()
+    fig.subplots_adjust(bottom=0.08 if throughput_text else 0.05)
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
@@ -154,6 +159,8 @@ def make_gif(
     else:
         frame_indices = list(range(max_len))
 
+    tasks = sim.get("tasks", [])
+
     height = len(cells)
     width = len(cells[0]) if height > 0 else 0
     cell_size = 0.5 if width <= 20 else 0.25
@@ -186,7 +193,14 @@ def make_gif(
             else:
                 facings[rid] = DIR_EAST
 
-        frame = render_frame(cells, goals, positions, facings, t_idx, title, cell_size)
+        delivered = sum(
+            1 for t in tasks
+            if t.get("delivered_time") is not None and t["delivered_time"] <= t_idx
+        )
+        rate = delivered / t_idx if t_idx > 0 else 0.0
+        tp_text = f"Delivered: {delivered} | Throughput: {rate:.2f}/t" if tasks else ""
+
+        frame = render_frame(cells, goals, positions, facings, t_idx, title, cell_size, tp_text)
         frames.append(frame)
         if len(frames) % 10 == 0:
             print(f"  rendered {len(frames)}/{len(frame_indices)} frames")

@@ -80,6 +80,9 @@ class MapEditor:
         self.timestep_label = tk.Label(left, text="T=0", width=24, anchor="w")
         self.timestep_label.pack(fill=tk.X, pady=(8, 0))
 
+        self.throughput_label = tk.Label(left, text="", width=24, anchor="w")
+        self.throughput_label.pack(fill=tk.X)
+
         self.sim_scale = tk.Scale(
             left,
             from_=0,
@@ -169,7 +172,17 @@ class MapEditor:
                 outline="",
                 tags="agent_static",
             )
-        self.timestep_label.config(text=f"T={self.sim_timestep_var.get() if self.sim_mode else 0}")
+        current_t = self.sim_timestep_var.get() if self.sim_mode else 0
+        self.timestep_label.config(text=f"T={current_t}")
+        if self.sim_mode and self.sim_tasks:
+            delivered = sum(
+                1 for t in self.sim_tasks
+                if t.get("delivered_time") is not None and t["delivered_time"] <= current_t
+            )
+            rate = delivered / current_t if current_t > 0 else 0.0
+            self.throughput_label.config(text=f"Delivered: {delivered} | Throughput: {rate:.2f}/t")
+        else:
+            self.throughput_label.config(text="")
 
     def _on_zoom(self, event):
         old_size = self.cell_size
